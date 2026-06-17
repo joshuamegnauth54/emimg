@@ -1,0 +1,54 @@
+[package]
+name = "emimg"
+version = "0.1.0"
+authors = ["Josh Megnauth <jo.sh@tutanota.com>"]
+edition = "2024"
+description = "Emimg is a petite, sandboxed image viewer."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+strip = true
+
+[features]
+default = [
+  "wayland",
+  "x11",
+  "default-formats",
+  "avif-native",
+  "nasm",
+  "rayon",
+  "image-extras",
+]
+
+# image-rs
+default-formats = ["image/default-formats"]
+avif-native = ["image/avif-native"]
+nasm = ["image/nasm"]
+rayon = ["image/rayon"]
+
+# winit
+wayland = ["winit/wayland"]
+x11 = ["winit/x11"]
+
+[dependencies]
+ash = "0.38"
+cap-std = "4"
+
+[dependencies.image]
+version = "0.25"
+default-features = false
+
+[dependencies.image-extras]
+version = "0.1"
+optional = true
+
+[dependencies.winit]
+version = "0.30"
+default-features = false
+features = ["rwh_06"]
+
+[target.'cfg(unix)'.dependencies]
+rustix = "1"
