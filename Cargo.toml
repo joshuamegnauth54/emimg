@@ -13,18 +13,21 @@ lto = "fat"
 strip = true
 
 [features]
-default = [
-  "wayland",
-  "x11",
-  "default-formats",
+default = ["default-formats", "no-libc", "wayland", "x11"]
+
+default-formats = [
+  "image-default-formats",
   "avif-native",
   "nasm",
   "rayon",
   "image-extras",
 ]
 
+# Build default with rust-lang/libc instead of eyra and c-gull
+default-rust-libc = ["default-formats", "rust-libc", "wayland", "x11"]
+
 # image-rs
-default-formats = ["image/default-formats"]
+image-default-formats = ["image/default-formats"]
 avif-native = ["image/avif-native"]
 nasm = ["image/nasm"]
 rayon = ["image/rayon"]
@@ -34,7 +37,10 @@ wayland = ["winit/wayland"]
 x11 = ["winit/x11"]
 
 # Use eyra/rustix for libc
-# no-libc = ["std", "c-gull"]
+no-libc = ["libc", "std"]
+
+# Use the real libc bindings; rust-lang/libc
+rust-libc = ["libc-rust"]
 
 # Profiling
 dhat-ad-hoc = ["dhat"]
@@ -43,18 +49,9 @@ dhat-heap = ["dhat"]
 [dependencies]
 ash = "0.38"
 cap-std = "4"
-
-[dependencies.dhat]
-version = "0.3"
-optional = true
-
-[dependencies.image]
-version = "0.25"
-default-features = false
-
-[dependencies.image-extras]
-version = "0.1"
-optional = true
+dhat = { version = "0.3", optional = true }
+image = { version = "0.25", default-features = false }
+image-extras = { version = "0.1", optional = true }
 
 [dependencies.winit]
 version = "0.30"
@@ -64,9 +61,17 @@ features = ["rwh_06"]
 [target.'cfg(unix)'.dependencies]
 rustix = "1"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["thread"] }
+
 [target.'cfg(target_os = "linux")'.dependencies.libc]
 package = "c-gull"
 version = "0.22"
+optional = true
+
+[target.'cfg(target_os = "linux")'.dependencies.libc-rust]
+package = "libc"
+version = "0.2"
 optional = true
 
 [target.'cfg(target_os = "linux")'.dependencies.std]

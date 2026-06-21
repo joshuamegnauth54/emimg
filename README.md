@@ -4,8 +4,8 @@ Emimg is a petite, sandboxed image viewer.
 
 ## Goals
 
-* Sandbox the program using operating system primitives like [seccomp](https://www.man7.org/linux/man-pages/man2/seccomp.2.html)
 * Display image(s) in a box
+* Sandbox the program using operating system primitives like [seccomp](https://www.man7.org/linux/man-pages/man2/seccomp.2.html)
 
 ## Non-goals
 

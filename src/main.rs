@@ -12,7 +12,10 @@ fn main() {
     let _profiler = dhat::Profiler::new_heap();
 
     #[cfg(target_os = "linux")]
-    sandbox::sandbox_process(cap_std::ambient_authority()).unwrap();
+    // SAFETY: No threads, no shared file descriptors.
+    unsafe {
+        sandbox::sandbox_process(cap_std::ambient_authority()).unwrap()
+    };
 
     // SANDBOX MOUNTS...
 

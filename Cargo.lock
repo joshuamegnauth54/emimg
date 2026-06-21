@@ -664,6 +664,7 @@ dependencies = [
  "eyra",
  "image",
  "image-extras",
+ "libc",
  "rustix 1.1.4",
  "winit",
 ]

@@ -16,7 +16,13 @@ impl<'buf> BufferFmtWriter<'buf> {
     }
 
     pub const fn as_str(&self) -> &str {
-        unsafe { str::from_utf8_unchecked(&self.buf[..pos]) }
+        // TODO: const Index
+        // SAFETY:
+        // * `pos` is a usize so it can't be negative and is initialized as 0
+        // * `pos` is checked to be less than len() in write_str()
+        let (buf, _) = unsafe { self.buf.split_at_unchecked(self.pos) };
+        // SAFETY: All writes go through fmt::Write which requires valid UTF-8
+        unsafe { str::from_utf8_unchecked(&buf) }
     }
 
     pub const fn clear(&mut self) {
