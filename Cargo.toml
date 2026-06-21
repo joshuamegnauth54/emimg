@@ -33,9 +33,20 @@ rayon = ["image/rayon"]
 wayland = ["winit/wayland"]
 x11 = ["winit/x11"]
 
+# Use eyra/rustix for libc
+# no-libc = ["std", "c-gull"]
+
+# Profiling
+dhat-ad-hoc = ["dhat"]
+dhat-heap = ["dhat"]
+
 [dependencies]
 ash = "0.38"
 cap-std = "4"
+
+[dependencies.dhat]
+version = "0.3"
+optional = true
 
 [dependencies.image]
 version = "0.25"
@@ -52,3 +63,13 @@ features = ["rwh_06"]
 
 [target.'cfg(unix)'.dependencies]
 rustix = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies.libc]
+package = "c-gull"
+version = "0.22"
+optional = true
+
+[target.'cfg(target_os = "linux")'.dependencies.std]
+package = "eyra"
+version = "0.22"
+optional = true

@@ -15,8 +15,8 @@ jobs:
     name: Check formatting
     runs-on: ubuntu-latest
     steps:
-        - uses: actions/checkout@v6
-        - uses: dtolnay/rust-toolchain@stable
+        - uses: actions/checkout@v7
+        - uses: dtolnay/rust-toolchain@nightly
           with:
             components: rustfmt
         - run: cargo fmt --all --check
@@ -26,12 +26,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - uses: davidlattimore/wild-action@latest
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            pkg-config \
+            wayland-client \
+            wayland-dev \
+            libx11-dev
       - run: cargo clippy --all-targets --all-features
 
   linux:
@@ -39,10 +47,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - uses: davidlattimore/wild-action@latest
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            pkg-config \
+            wayland-client \
+            wayland-dev \
+            libx11-dev
       - run: cargo test --all-features
 
   macos:
@@ -50,7 +66,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --all-features
@@ -60,7 +76,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features
@@ -70,9 +86,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: vmactions/freebsd-vm@v1
         with:
           usesh: true
-          prepare: pkg install -y rust
+          prepare: pkg install -y rust seatd wayland xorg
           run: cargo test --all-features
