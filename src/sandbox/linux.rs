@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-const STAGE_WAITIN: u64 = 0;
-const STAGE_ID_MAP: u64 = 1;
-const STAGE_ID_FIN: u64 = 2;
-const STAGE_ID_DIE: u64 = 3;
-
 #[cfg(feature = "rust-libc")]
 use libc_rust as libc;
 
@@ -17,16 +12,23 @@ use rustix::{
     fd::OwnedFd,
     io::{self, Errno, Result},
     process::{self, Pid, Signal},
-    thread::{UnshareFlags, unshare_unsafe},
+    thread::UnshareFlags,
 };
 
 use crate::utils::BufferFmtWriter;
 
 pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()> {
-    let events = eventfd(STAGE_WAITIN as u32, EventfdFlags::CLOEXEC)?;
+    let efd1 = eventfd(0, EventfdFlags::CLOEXEC)?;
+    let efd2 = eventfd(0, EventfdFlags::CLOEXEC)?;
     let clone3_args = clone_args {
         // The rest of the permissions will be unshare'd and seccomp'd.
-        flags: (libc::CLONE_NEWUSER | libc::CLONE_NEWPID) as u64,
+        flags: (UnshareFlags::NEWPID
+            | UnshareFlags::NEWTIME
+            | UnshareFlags::NEWNET
+            | UnshareFlags::NEWNS
+            | UnshareFlags::NEWUSER
+            | UnshareFlags::NEWUTS)
+            .bits() as u64,
         pidfd: 0, // TODO: USE PIDFD
         child_tid: 0,
         parent_tid: 0,
@@ -56,7 +58,7 @@ pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()>
         };
         let pid = Pid::from_raw(pid)
             .unwrap_or_else(|| panic!("SANDBOX: Child PID ({pid}) should be > 0"));
-        if let Err(e) = parent_write_id_map(pid, events, ambient_authority) {
+        if let Err(e) = parent_write_id_map(pid, efd1, efd2, ambient_authority) {
             process::kill_process(pid, Signal::KILL).unwrap();
             panic!("SANDBOX: Failed to write UID/GID map ({e})");
         };
@@ -66,7 +68,9 @@ pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()>
     } else if pid < 0 {
         cold_path();
         // SAFETY: clone3 failed so we're still in our main process.
-        Err(Errno::from_raw_os_error(pid as i32))?;
+        Err(Errno::from_raw_os_error(unsafe {
+            *libc::__errno_location()
+        }))?;
     }
 
     #[cfg(debug_assertions)]
@@ -80,7 +84,7 @@ pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()>
         panic!("SANDBOX: Parent unexpectedly alive after writing UID/GID map");
     }
 
-    child_unshare_all(events)
+    child_unshare_all(efd2, efd1)
 }
 
 /// Write the user namespace UID/GID map.
@@ -90,14 +94,15 @@ pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()>
 /// **DO NOT** panic. Return an error so that the parent process can clean up.
 fn parent_write_id_map(
     child: Pid,
-    events: OwnedFd,
+    from: OwnedFd,
+    to: OwnedFd,
     ambient_authority: AmbientAuthority,
 ) -> Result<()> {
     let mut event_buf = 0u64.to_ne_bytes();
 
     // Wait for the child to signal it's ready for the map.
-    let nread = io::read(&events, &mut event_buf)?;
-    if nread != size_of::<u64>() || u64::from_ne_bytes(event_buf) != STAGE_ID_MAP {
+    let nread = io::read(&from, &mut event_buf)?;
+    if nread != size_of::<u64>() || u64::from_ne_bytes(event_buf) != 1 {
         return Err(Errno::IO);
     }
 
@@ -134,52 +139,41 @@ fn parent_write_id_map(
         .map_err(from_io_error)?;
 
     // Signal the child that parent-side setup is complete.
-    event_buf = STAGE_ID_FIN.to_ne_bytes();
-    if io::write(&events, &event_buf)? != size_of::<u64>() {
+    if io::write(&to, &1u64.to_ne_bytes())? != size_of::<u64>() {
         cold_path();
-        return Err(Errno::IO);
+        Err(Errno::IO)
+    } else {
+        Ok(())
     }
-
-    let _ = io::read(&events, &mut event_buf);
-    Ok(())
 }
 
 // Mount required directories and drop permissions.
-fn child_unshare_all(event: OwnedFd) -> Result<()> {
+fn child_unshare_all(from: OwnedFd, to: OwnedFd) -> Result<()> {
     // Signal the parent to write the map.
-    let mut event_buf = STAGE_ID_MAP.to_ne_bytes();
-    if io::write(&event, &event_buf)? != size_of::<u64>() {
+    if io::write(&to, &1u64.to_ne_bytes())? != size_of::<u64>() {
         return Err(Errno::IO);
     }
 
     // Wait for parent to signal that it's finished.
-    let nread = io::read(&event, &mut event_buf)?;
-    if nread != size_of::<u64>() || u64::from_ne_bytes(event_buf) != STAGE_ID_FIN {
+    let mut event_buf = 0u64.to_ne_bytes();
+    let nread = io::read(&from, &mut event_buf)?;
+    if nread != size_of::<u64>() || u64::from_ne_bytes(event_buf) != 1 {
         return Err(Errno::IO);
     }
-    // Signal parent that we're finished
-    core::mem::drop(event);
+    // Close eventfd to not carry it across fork.
+    // core::mem::drop(events);
 
     // SAFETY: No resources are shared from parent process to child.
     // This invariant is upheld by main().
-    unsafe {
-        unshare_unsafe(
-            UnshareFlags::NEWNS
-                | UnshareFlags::NEWNET
-                | UnshareFlags::NEWIPC
-                | UnshareFlags::NEWTIME,
-        )?;
-    }
-
-    // Fork to actually use NEWPID. NEWPID is complete overkill here, but having the image
-    // viewer be isolated seems pretty fun to me.
-    unsafe {
-        match libc::fork() {
-            0 => Ok(()),
-            -1 => Err(Errno::from_raw_os_error(*libc::__errno_location())),
-            _ => libc::_exit(libc::EXIT_SUCCESS),
-        }
-    }
+    // unsafe {
+    //     unshare_unsafe(
+    //         UnshareFlags::NEWNS
+    //             | UnshareFlags::NEWNET
+    //             | UnshareFlags::NEWIPC
+    //             | UnshareFlags::NEWTIME,
+    //     )?;
+    // }
+    Ok(())
 }
 
 #[cold]
