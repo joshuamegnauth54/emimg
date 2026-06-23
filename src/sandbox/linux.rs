@@ -18,8 +18,7 @@ use rustix::{
 use crate::utils::BufferFmtWriter;
 
 pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()> {
-    let efd1 = eventfd(0, EventfdFlags::CLOEXEC)?;
-    let efd2 = eventfd(0, EventfdFlags::CLOEXEC)?;
+    let events = eventfd(0, EventfdFlags::CLOEXEC)?;
     let clone3_args = clone_args {
         // The rest of the permissions will be unshare'd and seccomp'd.
         flags: (UnshareFlags::NEWPID
@@ -58,7 +57,7 @@ pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()>
         };
         let pid = Pid::from_raw(pid)
             .unwrap_or_else(|| panic!("SANDBOX: Child PID ({pid}) should be > 0"));
-        if let Err(e) = parent_write_id_map(pid, efd1, efd2, ambient_authority) {
+        if let Err(e) = parent_write_id_map(pid, events, ambient_authority) {
             process::kill_process(pid, Signal::KILL).unwrap();
             panic!("SANDBOX: Failed to write UID/GID map ({e})");
         };
@@ -84,7 +83,7 @@ pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()>
         panic!("SANDBOX: Parent unexpectedly alive after writing UID/GID map");
     }
 
-    child_unshare_all(efd2, efd1)
+    child_unshare_all(events)
 }
 
 /// Write the user namespace UID/GID map.
@@ -94,18 +93,9 @@ pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()>
 /// **DO NOT** panic. Return an error so that the parent process can clean up.
 fn parent_write_id_map(
     child: Pid,
-    from: OwnedFd,
-    to: OwnedFd,
+    events: OwnedFd,
     ambient_authority: AmbientAuthority,
 ) -> Result<()> {
-    let mut event_buf = 0u64.to_ne_bytes();
-
-    // Wait for the child to signal it's ready for the map.
-    let nread = io::read(&from, &mut event_buf)?;
-    if nread != size_of::<u64>() || u64::from_ne_bytes(event_buf) != 1 {
-        return Err(Errno::IO);
-    }
-
     // Open /proc/{child} with openat2
     let proc_dir = fs::Dir::open_ambient_dir("/proc", ambient_authority).map_err(from_io_error)?;
     let mut scratch_buf = [0u8; libc::PATH_MAX as usize];
@@ -139,7 +129,7 @@ fn parent_write_id_map(
         .map_err(from_io_error)?;
 
     // Signal the child that parent-side setup is complete.
-    if io::write(&to, &1u64.to_ne_bytes())? != size_of::<u64>() {
+    if io::write(&events, &1u64.to_ne_bytes())? != size_of::<u64>() {
         cold_path();
         Err(Errno::IO)
     } else {
@@ -148,20 +138,13 @@ fn parent_write_id_map(
 }
 
 // Mount required directories and drop permissions.
-fn child_unshare_all(from: OwnedFd, to: OwnedFd) -> Result<()> {
-    // Signal the parent to write the map.
-    if io::write(&to, &1u64.to_ne_bytes())? != size_of::<u64>() {
-        return Err(Errno::IO);
-    }
-
+fn child_unshare_all(events: OwnedFd) -> Result<()> {
     // Wait for parent to signal that it's finished.
     let mut event_buf = 0u64.to_ne_bytes();
-    let nread = io::read(&from, &mut event_buf)?;
+    let nread = io::read(&events, &mut event_buf)?;
     if nread != size_of::<u64>() || u64::from_ne_bytes(event_buf) != 1 {
         return Err(Errno::IO);
     }
-    // Close eventfd to not carry it across fork.
-    // core::mem::drop(events);
 
     // SAFETY: No resources are shared from parent process to child.
     // This invariant is upheld by main().
