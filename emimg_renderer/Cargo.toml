@@ -1,0 +1,27 @@
+[package]
+name = "emimg_renderer"
+description.workspace = true
+authors.workspace = true
+version.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+wayland = ["winit/wayland"]
+x11 = ["winit/x11"]
+
+no-libc = ["std"]
+
+[dependencies]
+ash.workspace = true
+winit.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies.std]
+package = "eyra"
+version = "0.22"
+optional = true
+
+[build-dependencies]
+spirv-builder.workspace = true

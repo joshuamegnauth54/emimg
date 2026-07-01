@@ -1,0 +1,35 @@
+[package]
+name = "emimg_image"
+description.workspace = true
+authors.workspace = true
+version.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+default-formats = [
+  "image-default-formats",
+  "avif-native",
+  "nasm",
+  "rayon",
+  "image-extras",
+]
+
+no-libc = ["std"]
+
+# image-rs
+image-default-formats = ["image/default-formats"]
+avif-native = ["image/avif-native"]
+nasm = ["image/nasm"]
+rayon = ["image/rayon"]
+
+[dependencies]
+image.workspace = true
+image-extras = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies.std]
+package = "eyra"
+version = "0.22"
+optional = true

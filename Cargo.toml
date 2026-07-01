@@ -1,11 +1,25 @@
 [package]
 name = "emimg"
-version = "0.1.0"
-authors = ["Josh Megnauth <jo.sh@tutanota.com>"]
-edition = "2024"
+description.workspace = true
+authors.workspace = true
+version.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[workspace]
+resolver = "2"
+members = ["emimg_image", "emimg_renderer", "emimg_sandbox"]
+
+[workspace.package]
 description = "Emimg is a petite, sandboxed image viewer."
+authors = ["Josh Megnauth <jo.sh@tutanota.com>"]
+version = "0.1.0"
+repository = "https://github.com/joshuamegnauth54/emimg"
 readme = "README.md"
 license = "GPL-3.0-or-later"
+edition = "2024"
 
 [profile.release]
 codegen-units = 1
@@ -14,65 +28,56 @@ strip = true
 
 [features]
 default = ["default-formats", "no-libc", "wayland", "x11"]
-
-default-formats = [
-  "image-default-formats",
-  "avif-native",
-  "nasm",
-  "rayon",
-  "image-extras",
-]
-
+default-formats = ["emimg_image/default-formats"]
 # Build default with rust-lang/libc instead of eyra and c-gull
 default-rust-libc = ["default-formats", "rust-libc", "wayland", "x11"]
 
-# image-rs
-image-default-formats = ["image/default-formats"]
-avif-native = ["image/avif-native"]
-nasm = ["image/nasm"]
-rayon = ["image/rayon"]
-
 # winit
-wayland = ["winit/wayland"]
-x11 = ["winit/x11"]
+wayland = ["emimg_renderer/wayland"]
+x11 = ["emimg_renderer/x11"]
 
 # Use eyra/rustix for libc
-no-libc = ["libc", "std"]
+no-libc = [
+  "std",
+  "emimg_image/no-libc",
+  "emimg_renderer/no-libc",
+  "emimg_sandbox/no-libc",
+]
 
 # Use the real libc bindings; rust-lang/libc
-rust-libc = ["libc-rust"]
+rust-libc = ["emimg_sandbox/libc-rust"]
 
 # Profiling
 dhat-ad-hoc = ["dhat"]
 dhat-heap = ["dhat"]
 
-[dependencies]
+[workspace.dependencies]
 ash = "0.38"
 cap-std = "4"
-dhat = { version = "0.3", optional = true }
+dhat = "0.3"
+eyra = "0.22"
+glam = "0.33"
 image = { version = "0.25", default-features = false }
-image-extras = { version = "0.1", optional = true }
+image-extras = "0.1"
+libc = "0.2"
+rustix = "1"
+spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu" }
 
-[dependencies.winit]
+[workspace.dependencies.spirv-std]
+git = "https://github.com/Rust-GPU/rust-gpu"
+features = ["bytemuck"]
+
+[workspace.dependencies.winit]
 version = "0.30"
 default-features = false
 features = ["rwh_06"]
 
-[target.'cfg(unix)'.dependencies]
-rustix = "1"
+[dependencies]
+emimg_image = { path = "emimg_image" }
+emimg_renderer = { path = "emimg_renderer" }
+emimg_sandbox = { path = "emimg_sandbox" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-rustix = { version = "1", features = ["thread"] }
-
-[target.'cfg(target_os = "linux")'.dependencies.libc]
-package = "c-gull"
-version = "0.22"
-optional = true
-
-[target.'cfg(target_os = "linux")'.dependencies.libc-rust]
-package = "libc"
-version = "0.2"
-optional = true
+dhat = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies.std]
 package = "eyra"

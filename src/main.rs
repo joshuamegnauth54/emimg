@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-mod sandbox;
-mod utils;
-
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
+
+#[cfg(target_os = "linux")]
+fn linux_sandbox() {
+    // SAFETY: No threads, no shared file descriptors.
+    unsafe { emimg_sandbox::sandbox_process(cap_std::ambient_authority()).unwrap() };
+}
 
 fn main() {
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
 
     #[cfg(target_os = "linux")]
-    // SAFETY: No threads, no shared file descriptors.
-    unsafe {
-        sandbox::sandbox_process(cap_std::ambient_authority()).unwrap()
-    };
+    linux_sandbox();
 
     // SANDBOX MOUNTS...
 

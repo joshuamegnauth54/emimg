@@ -1,0 +1,40 @@
+[package]
+name = "emimg_sandbox"
+description.workspace = true
+authors.workspace = true
+version.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+# Use eyra/rustix for libc
+no-libc = ["libc", "std"]
+
+# Use the real libc bindings; rust-lang/libc
+rust-libc = ["libc-rust"]
+
+[dependencies]
+cap-std.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["thread"] }
+
+[target.'cfg(target_os = "linux")'.dependencies.libc]
+package = "c-gull"
+version = "0.22"
+optional = true
+
+[target.'cfg(target_os = "linux")'.dependencies.libc-rust]
+package = "libc"
+version = "0.2"
+optional = true
+
+[target.'cfg(target_os = "linux")'.dependencies.std]
+package = "eyra"
+version = "0.22"
+optional = true

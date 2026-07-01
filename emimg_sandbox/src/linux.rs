@@ -17,7 +17,13 @@ use rustix::{
 
 use crate::utils::BufferFmtWriter;
 
-pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()> {
+#[derive(Clone, Copy)]
+pub enum SandboxClone {
+    Parent,
+    Child,
+}
+
+pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<SandboxClone> {
     let events = eventfd(0, EventfdFlags::CLOEXEC)?;
     let clone3_args = clone_args {
         // The rest of the permissions will be unshare'd and seccomp'd.
@@ -63,7 +69,7 @@ pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<()>
         };
 
         // Kill parent because we don't it anymore.
-        unsafe { libc::_exit(libc::EXIT_SUCCESS) };
+        return Ok(SandboxClone::Parent);
     } else if pid < 0 {
         cold_path();
         // SAFETY: clone3 failed so we're still in our main process.
@@ -138,7 +144,7 @@ fn parent_write_id_map(
 }
 
 // Mount required directories and drop permissions.
-fn child_unshare_all(events: OwnedFd) -> Result<()> {
+fn child_unshare_all(events: OwnedFd) -> Result<SandboxClone> {
     // Wait for parent to signal that it's finished.
     let mut event_buf = 0u64.to_ne_bytes();
     let nread = io::read(&events, &mut event_buf)?;
@@ -156,7 +162,7 @@ fn child_unshare_all(events: OwnedFd) -> Result<()> {
     //             | UnshareFlags::NEWTIME,
     //     )?;
     // }
-    Ok(())
+    Ok(SandboxClone::Child)
 }
 
 #[cold]

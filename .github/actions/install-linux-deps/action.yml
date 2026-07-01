@@ -1,0 +1,26 @@
+name: Install Linux dependencies
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          pkg-config \
+          libvulkan-dev \
+          glslang-tools \
+          wayland-protocols \
+          libwayland-dev \
+          libxkbcommon-dev \
+          libx11-dev \
+          libx11-xcb-dev \
+          libxcb1-dev \
+          libxcb-randr0-dev \
+          libxcb-shape0-dev \
+          libxcb-xfixes0-dev \
+          libxcb-keysyms1-dev \
+          libxcb-icccm4-dev \
+          libxcb-sync-dev \
+          libxcb-xkb-dev \
+          libxkbcommon-x11-dev
