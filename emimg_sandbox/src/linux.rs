@@ -10,12 +10,15 @@ use libc::{SYS_clone3, clone_args, syscall};
 use rustix::{
     event::{EventfdFlags, eventfd},
     fd::OwnedFd,
-    io::{self, Errno, Result},
+    io::{self, Errno},
     process::{self, Pid, Signal},
     thread::UnshareFlags,
 };
 
-use crate::utils::BufferFmtWriter;
+use crate::{
+    error::{Action, SandboxError, Stage},
+    utils::BufferFmtWriter,
+};
 
 #[derive(Clone, Copy)]
 pub enum SandboxClone {
@@ -23,8 +26,15 @@ pub enum SandboxClone {
     Child,
 }
 
-pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<SandboxClone> {
-    let events = eventfd(0, EventfdFlags::CLOEXEC)?;
+pub unsafe fn sandbox_process(
+    ambient_authority: AmbientAuthority,
+) -> Result<SandboxClone, SandboxError> {
+    let events = eventfd(0, EventfdFlags::CLOEXEC).map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::CloneNamespace,
+        action: Action::EventfdNew,
+        context: Some("opening an eventfd to synch between parent and child"),
+    })?;
     let clone3_args = clone_args {
         // The rest of the permissions will be unshare'd and seccomp'd.
         flags: (UnshareFlags::NEWPID
@@ -73,9 +83,12 @@ pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<San
     } else if pid < 0 {
         cold_path();
         // SAFETY: clone3 failed so we're still in our main process.
-        Err(Errno::from_raw_os_error(unsafe {
-            *libc::__errno_location()
-        }))?;
+        Err(SandboxError {
+            errno: Errno::from_raw_os_error(unsafe { *libc::__errno_location() }),
+            stage: Stage::CloneNamespace,
+            action: Action::Clone,
+            context: Some("in main process; no child should exist"),
+        })?;
     }
 
     #[cfg(debug_assertions)]
@@ -92,7 +105,7 @@ pub unsafe fn sandbox_process(ambient_authority: AmbientAuthority) -> Result<San
     child_unshare_all(events)
 }
 
-/// Write the user namespace UID/GID map.
+/// Write the user namespace UID/GID map to ensure correct permissions.
 ///
 /// ## Warning
 ///
@@ -101,55 +114,118 @@ fn parent_write_id_map(
     child: Pid,
     events: OwnedFd,
     ambient_authority: AmbientAuthority,
-) -> Result<()> {
+) -> Result<(), SandboxError> {
     // Open /proc/{child} with openat2
-    let proc_dir = fs::Dir::open_ambient_dir("/proc", ambient_authority).map_err(from_io_error)?;
+    let proc_dir =
+        fs::Dir::open_ambient_dir("/proc", ambient_authority).map_err(|io| SandboxError {
+            errno: from_io_error(io),
+            stage: Stage::WriteIdMap,
+            action: Action::OpenDir,
+            context: Some("opening directory descriptor for /proc"),
+        })?;
     let mut scratch_buf = [0u8; libc::PATH_MAX as usize];
     let mut scratch = BufferFmtWriter::new(&mut scratch_buf);
-    write!(scratch, "{child}").map_err(|_| Errno::NOSPC)?;
-    let proc_dir = proc_dir.open_dir(scratch.as_str()).map_err(from_io_error)?;
+    write!(scratch, "{child}").map_err(|_| {
+        SandboxError::buf_full(Stage::WriteIdMap, "writing child PID into scratch buf")
+    })?;
+    let proc_dir = proc_dir
+        .open_dir(scratch.as_str())
+        .map_err(|io| SandboxError {
+            errno: from_io_error(io),
+            stage: Stage::WriteIdMap,
+            action: Action::OpenDir,
+            context: Some("opening /proc/{pid}"),
+        })?;
 
     // Disable setgroups because sandboxed processes aren't allowed to set supplementary groups.
-    proc_dir.write("setgroups", "deny").map_err(from_io_error)?;
+    proc_dir
+        .write("setgroups", "deny")
+        .map_err(|io| SandboxError {
+            errno: from_io_error(io),
+            stage: Stage::WriteIdMap,
+            action: Action::WriteFile,
+            context: Some("writing 'deny' to /proc/{pid}/setgroups"),
+        })?;
 
     // Map namespace's internal root to our current UID/GID.
     let uid = process::getuid();
     let gid = process::getgid();
     if uid.is_root() || gid.is_root() {
         cold_path();
-        return Err(Errno::PERM);
+        return Err(SandboxError {
+            errno: Errno::PERM,
+            stage: Stage::WriteIdMap,
+            action: Action::SaneSecurity,
+            context: Some("DUDE WHY ARE YOU ROOT"),
+        });
     }
 
     // UID
     scratch.clear();
-    writeln!(scratch, "0 {uid} 1").map_err(|_| Errno::NOSPC)?;
+    writeln!(scratch, "0 {uid} 1").map_err(|_| {
+        SandboxError::buf_full(Stage::WriteIdMap, "writing UID map to in memory buffer")
+    })?;
     proc_dir
         .write("uid_map", scratch.as_str())
-        .map_err(from_io_error)?;
+        .map_err(|io| SandboxError {
+            errno: from_io_error(io),
+            stage: Stage::WriteIdMap,
+            action: Action::WriteFile,
+            context: Some("writing /proc/{pid}/uid_map to map namespace root to current UID"),
+        })?;
 
     // GID
     scratch.clear();
-    writeln!(scratch, "0 {gid} 1").map_err(|_| Errno::NOSPC)?;
+    writeln!(scratch, "0 {gid} 1").map_err(|_| {
+        SandboxError::buf_full(Stage::WriteIdMap, "writing GID map to in memory buffer")
+    })?;
     proc_dir
         .write("gid_map", scratch.as_str())
-        .map_err(from_io_error)?;
+        .map_err(|io| SandboxError {
+            errno: from_io_error(io),
+            stage: Stage::WriteIdMap,
+            action: Action::WriteFile,
+            context: Some("writing /proc/{pid}/gid_map to map namespace root to current GID"),
+        })?;
 
     // Signal the child that parent-side setup is complete.
-    if io::write(&events, &1u64.to_ne_bytes())? != size_of::<u64>() {
+    if io::write(&events, &1u64.to_ne_bytes()).map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::WriteIdMap,
+        action: Action::WriteFile,
+        context: Some("bumping eventfd counter to signal namespace process"),
+    })? != size_of::<u64>()
+    {
         cold_path();
-        Err(Errno::IO)
+        Err(SandboxError {
+            errno: Errno::IO,
+            stage: Stage::WriteIdMap,
+            action: Action::WriteFile,
+            context: Some("bumping eventfd counter; the full buffer wasn't written"),
+        })
     } else {
         Ok(())
     }
 }
 
 // Mount required directories and drop permissions.
-fn child_unshare_all(events: OwnedFd) -> Result<SandboxClone> {
+fn child_unshare_all(events: OwnedFd) -> Result<SandboxClone, SandboxError> {
     // Wait for parent to signal that it's finished.
     let mut event_buf = 0u64.to_ne_bytes();
-    let nread = io::read(&events, &mut event_buf)?;
+    let nread = io::read(&events, &mut event_buf).map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::WriteIdMap,
+        action: Action::ReadFile,
+        context: Some("reading from eventfd counter in the child process"),
+    })?;
     if nread != size_of::<u64>() || u64::from_ne_bytes(event_buf) != 1 {
-        return Err(Errno::IO);
+        cold_path();
+        return Err(SandboxError {
+            errno: Errno::IO,
+            stage: Stage::WriteIdMap,
+            action: Action::ReadFile,
+            context: Some("reading from eventfd counter; buffer is truncated"),
+        });
     }
 
     // SAFETY: No resources are shared from parent process to child.

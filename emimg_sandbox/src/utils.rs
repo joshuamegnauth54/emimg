@@ -15,6 +15,7 @@ impl<'buf> BufferFmtWriter<'buf> {
         Self { buf, pos: 0 }
     }
 
+    #[must_use]
     pub const fn as_str(&self) -> &str {
         // TODO: const Index
         // SAFETY:

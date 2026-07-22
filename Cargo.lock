@@ -808,6 +808,7 @@ dependencies = [
 name = "emimg"
 version = "0.1.0"
 dependencies = [
+ "cap-std",
  "dhat",
  "emimg_image",
  "emimg_renderer",

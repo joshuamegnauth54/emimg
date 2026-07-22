@@ -1,0 +1,23 @@
+name: Install macOS dependencies
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euxo pipefail
+
+        brew update
+        brew install \
+          glslang \
+          molten-vk \
+          pkg-config
+
+    - shell: bash
+      run: |
+        set -euxo pipefail
+
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+          | sh -s -- -y
+
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"

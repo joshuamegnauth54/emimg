@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
         - uses: actions/checkout@v7
-        - uses: dtolnay/rust-toolchain@master
+        - uses: ./.github/actions/setup-linux
         - run: cargo fmt --all --check
 
   clippy:
@@ -27,8 +27,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - uses: davidlattimore/wild-action@latest
-      - uses: dtolnay/rust-toolchain@master
-      - uses: ./.github/actions/install-linux-deps
+      - uses: ./.github/actions/setup-linux
       - run: cargo clippy --all-targets
 
   linux-no-libc:
@@ -39,8 +38,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - uses: davidlattimore/wild-action@latest
-      - uses: dtolnay/rust-toolchain@master
-      - uses: ./.github/actions/install-linux-deps
+      - uses: ./.github/actions/setup-linux
       - run: cargo test
 
   linux-libc:
@@ -51,8 +49,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - uses: davidlattimore/wild-action@latest
-      - uses: dtolnay/rust-toolchain@master
-      - uses: ./.github/actions/install-linux-deps
+      - uses: ./.github/actions/setup-linux
       - run: cargo test --no-default-features --features=default-rust-libc
 
   macos:
@@ -62,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/setup-macos
       - run: cargo test --all-features
 
   windows:
@@ -71,8 +68,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@master
       - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-windows
       - run: cargo test --all-features
 
   freebsd:
@@ -84,5 +81,21 @@ jobs:
       - uses: vmactions/freebsd-vm@v1
         with:
           usesh: true
-          prepare: pkg install -y pkg-config rust seatd wayland xorg
-          run: cargo test --all-features
+          prepare: |
+            set -eux
+
+            pkg update
+            pkg install -y \
+              pkg-config \
+              glslang \
+              libxkbcommon \
+              seatd \
+              vulkan-loader \
+              vulkan-headers \
+              wayland \
+              xorg
+
+            fetch -o - https://sh.rustup.rs | sh -s -- -y
+          run: |
+            export PATH="$HOME/.cargo/bin:$PATH"
+            cargo test --all-features
