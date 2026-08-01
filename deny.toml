@@ -1,0 +1,16 @@
+[graph]
+all-features = true
+
+[advisories]
+unmaintained = "workspace"
+unsound = "all"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [{ crate = "nix", use-instead = "rustix" }]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

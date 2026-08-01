@@ -9,6 +9,7 @@ runs:
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
+          dav1d \
           glslang-tools \
           libvulkan-dev \
           libwayland-dev \
@@ -24,7 +25,9 @@ runs:
           libxcb-sync-dev \
           libxcb-xfixes0-dev \
           libxkbcommon-x11-dev \
+          nasm \
           pkg-config \
+          rav1e \
           wayland-protocols
     - shell: bash
       run: |

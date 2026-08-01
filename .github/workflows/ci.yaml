@@ -86,9 +86,12 @@ jobs:
 
             pkg update
             pkg install -y \
+              dav1d \
+              nasm \
               pkg-config \
               glslang \
               libxkbcommon \
+              rav1e \
               seatd \
               vulkan-loader \
               vulkan-headers \
