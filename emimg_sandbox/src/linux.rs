@@ -5,12 +5,13 @@ use libc_rust as libc;
 
 use core::{fmt::Write, hint::cold_path, mem::size_of};
 
-use cap_std::{AmbientAuthority, fs};
 use libc::{SYS_clone3, clone_args, syscall};
 use rustix::{
     event::{EventfdFlags, eventfd},
-    fd::OwnedFd,
-    io::{self, Errno},
+    fd::{AsFd, OwnedFd},
+    fs::{CWD, Mode, OFlags, ResolveFlags, openat2},
+    io::{self, Errno, write},
+    path,
     process::{self, Pid, Signal},
     thread::UnshareFlags,
 };
@@ -20,15 +21,48 @@ use crate::{
     utils::BufferFmtWriter,
 };
 
+const DIR_FLAGS: OFlags = OFlags::from_bits(
+    OFlags::CLOEXEC.bits()
+        | OFlags::DIRECTORY.bits()
+        | OFlags::NOATIME.bits()
+        | OFlags::NOCTTY.bits()
+        | OFlags::NOFOLLOW.bits()
+        | OFlags::PATH.bits(),
+)
+.expect("valid OFlags bits");
+
+const FILE_FLAGS: OFlags = OFlags::from_bits(
+    OFlags::CLOEXEC.bits()
+        | OFlags::NOATIME.bits()
+        | OFlags::NOCTTY.bits()
+        | OFlags::NOFOLLOW.bits()
+        | OFlags::WRONLY.bits(),
+)
+.expect("valid OFlags bits");
+
+const FILE_RESOLVE_FLAGS: ResolveFlags = ResolveFlags::from_bits(
+    ResolveFlags::BENEATH.bits()
+        | ResolveFlags::IN_ROOT.bits()
+        | ResolveFlags::NO_MAGICLINKS.bits()
+        | ResolveFlags::NO_SYMLINKS.bits()
+        | ResolveFlags::NO_XDEV.bits(),
+)
+.expect("valid ResolveFlags bits");
+
 #[derive(Clone, Copy)]
 pub enum SandboxClone {
     Parent,
     Child,
 }
 
-pub unsafe fn sandbox_process(
-    ambient_authority: AmbientAuthority,
-) -> Result<SandboxClone, SandboxError> {
+/// Sandbox the current process by entering a bespoke user namespace.
+///
+/// # Safety
+/// * A new process is started with clone3 without sharing resources (no CLONE_VM)
+/// * The caller must ensure a limited execution environment by avoiding spawning threads.
+/// Threads can cause an inconsistent environment in the child (i.e. if locks are held by a thread
+/// the child can deadlock).
+pub unsafe fn sandbox_process() -> Result<SandboxClone, SandboxError> {
     let events = eventfd(0, EventfdFlags::CLOEXEC).map_err(|errno| SandboxError {
         errno,
         stage: Stage::CloneNamespace,
@@ -73,12 +107,12 @@ pub unsafe fn sandbox_process(
         };
         let pid = Pid::from_raw(pid)
             .unwrap_or_else(|| panic!("SANDBOX: Child PID ({pid}) should be > 0"));
-        if let Err(e) = parent_write_id_map(pid, events, ambient_authority) {
+        if let Err(e) = parent_write_id_map(pid, events) {
             process::kill_process(pid, Signal::KILL).unwrap();
             panic!("SANDBOX: Failed to write UID/GID map ({e})");
         };
 
-        // Kill parent because we don't it anymore.
+        // Kill parent because we don't need it anymore.
         return Ok(SandboxClone::Parent);
     } else if pid < 0 {
         cold_path();
@@ -110,42 +144,67 @@ pub unsafe fn sandbox_process(
 /// ## Warning
 ///
 /// **DO NOT** panic. Return an error so that the parent process can clean up.
-fn parent_write_id_map(
-    child: Pid,
-    events: OwnedFd,
-    ambient_authority: AmbientAuthority,
-) -> Result<(), SandboxError> {
+fn parent_write_id_map(child: Pid, events: OwnedFd) -> Result<(), SandboxError> {
+    // Open root and /proc with openat2.
+    // NO_XDEV is irrelevant here but I like having it anyway.
+    // Since I am opening an absolute path, this should succeed regardless of CWD.
+    let root = openat2(
+        CWD,
+        "/",
+        DIR_FLAGS,
+        Mode::empty(),
+        ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_XDEV,
+    )
+    .map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::WriteIdMap,
+        action: Action::OpenDir,
+        context: Some("opening directory descriptor for /"),
+    })?;
+    // root -> proc mount transition. NO_XDEV is not used here due to the mount transition.
+    let proc_dir = openat2(
+        root,
+        "proc",
+        DIR_FLAGS,
+        Mode::empty(),
+        ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_SYMLINKS,
+    )
+    .map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::WriteIdMap,
+        action: Action::OpenDir,
+        context: Some("opening directory descriptor for /proc"),
+    })?;
+
     // Open /proc/{child} with openat2
-    let proc_dir =
-        fs::Dir::open_ambient_dir("/proc", ambient_authority).map_err(|io| SandboxError {
-            errno: from_io_error(io),
-            stage: Stage::WriteIdMap,
-            action: Action::OpenDir,
-            context: Some("opening directory descriptor for /proc"),
-        })?;
     let mut scratch_buf = [0u8; libc::PATH_MAX as usize];
     let mut scratch = BufferFmtWriter::new(&mut scratch_buf);
     write!(scratch, "{child}").map_err(|_| {
         SandboxError::buf_full(Stage::WriteIdMap, "writing child PID into scratch buf")
     })?;
-    let proc_dir = proc_dir
-        .open_dir(scratch.as_str())
-        .map_err(|io| SandboxError {
-            errno: from_io_error(io),
-            stage: Stage::WriteIdMap,
-            action: Action::OpenDir,
-            context: Some("opening /proc/{pid}"),
-        })?;
+    let proc_dir = openat2(
+        proc_dir,
+        scratch.as_str(),
+        DIR_FLAGS,
+        Mode::empty(),
+        FILE_RESOLVE_FLAGS,
+    )
+    .map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::WriteIdMap,
+        action: Action::OpenDir,
+        context: Some("opening /proc/{pid}"),
+    })?;
 
     // Disable setgroups because sandboxed processes aren't allowed to set supplementary groups.
-    proc_dir
-        .write("setgroups", "deny")
-        .map_err(|io| SandboxError {
-            errno: from_io_error(io),
-            stage: Stage::WriteIdMap,
-            action: Action::WriteFile,
-            context: Some("writing 'deny' to /proc/{pid}/setgroups"),
-        })?;
+    write_proc(
+        &proc_dir,
+        "setgroups",
+        "deny".as_bytes(),
+        "opening /proc/{pid}/setgroups",
+        "writing 'deny' to /proc/{pid}/setgroups",
+        "short write while writing 'deny' to /proc/{pid}/setgroups",
+    )?;
 
     // Map namespace's internal root to our current UID/GID.
     let uid = process::getuid();
@@ -165,28 +224,28 @@ fn parent_write_id_map(
     writeln!(scratch, "0 {uid} 1").map_err(|_| {
         SandboxError::buf_full(Stage::WriteIdMap, "writing UID map to in memory buffer")
     })?;
-    proc_dir
-        .write("uid_map", scratch.as_str())
-        .map_err(|io| SandboxError {
-            errno: from_io_error(io),
-            stage: Stage::WriteIdMap,
-            action: Action::WriteFile,
-            context: Some("writing /proc/{pid}/uid_map to map namespace root to current UID"),
-        })?;
+    write_proc(
+        &proc_dir,
+        "uid_map",
+        scratch.as_bytes(),
+        "opening /proc/{pid}/uid_map",
+        "writing /proc/{pid}/uid_map to map namespace root to current UID",
+        "short write while writing UID map to /proc/{pid}/uid_map",
+    )?;
 
     // GID
     scratch.clear();
     writeln!(scratch, "0 {gid} 1").map_err(|_| {
         SandboxError::buf_full(Stage::WriteIdMap, "writing GID map to in memory buffer")
     })?;
-    proc_dir
-        .write("gid_map", scratch.as_str())
-        .map_err(|io| SandboxError {
-            errno: from_io_error(io),
-            stage: Stage::WriteIdMap,
-            action: Action::WriteFile,
-            context: Some("writing /proc/{pid}/gid_map to map namespace root to current GID"),
-        })?;
+    write_proc(
+        &proc_dir,
+        "gid_map",
+        scratch.as_bytes(),
+        "opening /proc/{pid}/gid_map",
+        "writing /proc/{pid}/gid_map to map namespace root to current GID",
+        "short write while writing GID map to /proc/{pid}/gid_map",
+    )?;
 
     // Signal the child that parent-side setup is complete.
     if io::write(&events, &1u64.to_ne_bytes()).map_err(|errno| SandboxError {
@@ -205,6 +264,58 @@ fn parent_write_id_map(
         })
     } else {
         Ok(())
+    }
+}
+
+fn write_proc(
+    proc_dir: impl AsFd,
+    path: impl path::Arg,
+    buf: &[u8],
+    open_err: &'static str,
+    write_err: &'static str,
+    short_write: &'static str,
+) -> Result<(), SandboxError> {
+    let fd = openat2(
+        proc_dir,
+        path,
+        FILE_FLAGS,
+        Mode::empty(),
+        FILE_RESOLVE_FLAGS,
+    )
+    .map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::WriteIdMap,
+        action: Action::WriteFile,
+        context: Some(open_err),
+    })?;
+
+    // Short writes are invalid for /proc. Retrying a short write rewrites the entire proc file.
+    loop {
+        match write(&fd, buf) {
+            Ok(n) if n == buf.len() => break Ok(()),
+            Ok(_) => {
+                cold_path();
+                break Err(SandboxError {
+                    errno: Errno::IO,
+                    stage: Stage::WriteIdMap,
+                    action: Action::WriteFile,
+                    context: Some(short_write),
+                });
+            }
+            Err(errno) if errno == Errno::INTR => {
+                cold_path();
+                continue;
+            }
+            Err(errno) => {
+                cold_path();
+                break Err(SandboxError {
+                    errno,
+                    stage: Stage::WriteIdMap,
+                    action: Action::WriteFile,
+                    context: Some(write_err),
+                });
+            }
+        }
     }
 }
 
@@ -241,7 +352,7 @@ fn child_unshare_all(events: OwnedFd) -> Result<SandboxClone, SandboxError> {
     Ok(SandboxClone::Child)
 }
 
-#[cold]
-fn from_io_error(e: std::io::Error) -> Errno {
-    Errno::from_io_error(&e).unwrap_or(Errno::IO)
-}
+// #[cold]
+// fn from_io_error(e: std::io::Error) -> Errno {
+//     Errno::from_io_error(&e).unwrap_or(Errno::IO)
+// }

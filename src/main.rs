@@ -7,7 +7,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 #[cfg(target_os = "linux")]
 fn linux_sandbox() {
     // SAFETY: No threads, no shared file descriptors.
-    unsafe { emimg_sandbox::sandbox_process(cap_std::ambient_authority()).unwrap() };
+    unsafe { emimg_sandbox::sandbox_process().unwrap() };
 }
 
 fn main() {

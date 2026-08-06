@@ -16,6 +16,13 @@ impl<'buf> BufferFmtWriter<'buf> {
     }
 
     #[must_use]
+    pub const fn as_bytes(&self) -> &[u8] {
+        // TODO: const Index
+        // SAFETY: See `as_str`
+        unsafe { self.buf.split_at_unchecked(self.pos) }.0
+    }
+
+    #[must_use]
     pub const fn as_str(&self) -> &str {
         // TODO: const Index
         // SAFETY:
@@ -23,7 +30,7 @@ impl<'buf> BufferFmtWriter<'buf> {
         // * `pos` is checked to be less than len() in write_str()
         let (buf, _) = unsafe { self.buf.split_at_unchecked(self.pos) };
         // SAFETY: All writes go through fmt::Write which requires valid UTF-8
-        unsafe { str::from_utf8_unchecked(&buf) }
+        unsafe { str::from_utf8_unchecked(buf) }
     }
 
     pub const fn clear(&mut self) {

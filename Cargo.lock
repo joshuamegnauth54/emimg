@@ -373,8 +373,7 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 [[package]]
 name = "c-gull"
 version = "0.22.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07eb0d427547755dff38931033459623ce3840cb419fb8350bfb7726fc7823ee"
+source = "git+https://github.com/sunfishcode/c-ward/#ac7e0f124aa678a7045d549aceb7e28ac233fe0f"
 dependencies = [
  "c-scape",
  "errno",
@@ -386,8 +385,7 @@ dependencies = [
 [[package]]
 name = "c-scape"
 version = "0.22.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fe550cd038da384598e6706071ebaafd83f1e92ce079bb680835bd269eedbc3"
+source = "git+https://github.com/sunfishcode/c-ward/#ac7e0f124aa678a7045d549aceb7e28ac233fe0f"
 dependencies = [
  "bitflags 2.13.0",
  "errno",
@@ -840,7 +838,6 @@ name = "emimg_sandbox"
 version = "0.1.0"
 dependencies = [
  "c-gull",
- "cap-std",
  "eyra",
  "libc",
  "rustix 1.1.4",
@@ -2154,7 +2151,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "692d98a33ca8355280e87c3dea4f62e3361c0fb64a76557d8d3988f070cd3c30"
 dependencies = [
  "bitflags 2.13.0",
- "libc",
  "linux-raw-sys 0.9.4",
  "rustix 1.1.4",
  "rustix-futex-sync",
@@ -2338,9 +2334,9 @@ dependencies = [
 
 [[package]]
 name = "printf-compat"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f6774deba7b969f90614d67c65be0e0c1232d4078332800d6e68a15ecc8a4f3"
+checksum = "613142bc127747febf3eae56e000f1be431756a6eaa8d3f060f9144d938e798c"
 dependencies = [
  "bitflags 2.13.0",
  "itertools 0.14.0",

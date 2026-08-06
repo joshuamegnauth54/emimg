@@ -26,7 +26,7 @@ fn main() {
     let shaders = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("Build with Cargo to ensure path env vars exist")
-        .join("rust_shaders");
+        .join("shaders");
     println!("cargo::rerun-if-changed={}", shaders.to_str().unwrap());
 
     for shader in fs::read_dir(shaders).expect("shaders directory should be in root") {

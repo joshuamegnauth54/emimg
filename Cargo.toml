@@ -84,3 +84,8 @@ dhat = { workspace = true, optional = true }
 package = "eyra"
 version = "0.22"
 optional = true
+
+[patch.crates-io]
+# Eyra doesn't build because it's using an old c-ward
+c-gull = { git = "https://github.com/sunfishcode/c-ward/" }
+c-scape = { git = "https://github.com/sunfishcode/c-ward/" }
