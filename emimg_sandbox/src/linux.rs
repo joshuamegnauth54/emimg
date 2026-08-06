@@ -3,17 +3,21 @@
 #[cfg(feature = "rust-libc")]
 use libc_rust as libc;
 
-use core::{fmt::Write, hint::cold_path, mem::size_of};
+use core::{
+    ffi::c_int,
+    fmt::Write,
+    hint::cold_path,
+    mem::{MaybeUninit, size_of},
+};
 
 use libc::{SYS_clone3, clone_args, syscall};
 use rustix::{
     event::{EventfdFlags, eventfd},
-    fd::{AsFd, OwnedFd},
+    fd::{AsFd, BorrowedFd, OwnedFd},
     fs::{CWD, Mode, OFlags, ResolveFlags, openat2},
     io::{self, Errno, write},
     path,
     process::{self, Pid, Signal},
-    thread::UnshareFlags,
 };
 
 use crate::{
@@ -24,8 +28,6 @@ use crate::{
 const DIR_FLAGS: OFlags = OFlags::from_bits(
     OFlags::CLOEXEC.bits()
         | OFlags::DIRECTORY.bits()
-        | OFlags::NOATIME.bits()
-        | OFlags::NOCTTY.bits()
         | OFlags::NOFOLLOW.bits()
         | OFlags::PATH.bits(),
 )
@@ -42,7 +44,6 @@ const FILE_FLAGS: OFlags = OFlags::from_bits(
 
 const FILE_RESOLVE_FLAGS: ResolveFlags = ResolveFlags::from_bits(
     ResolveFlags::BENEATH.bits()
-        | ResolveFlags::IN_ROOT.bits()
         | ResolveFlags::NO_MAGICLINKS.bits()
         | ResolveFlags::NO_SYMLINKS.bits()
         | ResolveFlags::NO_XDEV.bits(),
@@ -58,10 +59,11 @@ pub enum SandboxClone {
 /// Sandbox the current process by entering a bespoke user namespace.
 ///
 /// # Safety
-/// * A new process is started with clone3 without sharing resources (no CLONE_VM)
-/// * The caller must ensure a limited execution environment by avoiding spawning threads.
-/// Threads can cause an inconsistent environment in the child (i.e. if locks are held by a thread
-/// the child can deadlock).
+/// A new process is started with clone3 without sharing resources (no CLONE_VM).
+///
+/// The caller must ensure a limited execution environment by avoiding spawning threads.
+/// Threads can cause an inconsistent environment in the child (i.e. if locks are held by a
+/// thread the child can deadlock).
 pub unsafe fn sandbox_process() -> Result<SandboxClone, SandboxError> {
     let events = eventfd(0, EventfdFlags::CLOEXEC).map_err(|errno| SandboxError {
         errno,
@@ -69,16 +71,20 @@ pub unsafe fn sandbox_process() -> Result<SandboxClone, SandboxError> {
         action: Action::EventfdNew,
         context: Some("opening an eventfd to synch between parent and child"),
     })?;
+    let mut pidfd = MaybeUninit::<c_int>::uninit();
     let clone3_args = clone_args {
         // The rest of the permissions will be unshare'd and seccomp'd.
-        flags: (UnshareFlags::NEWPID
-            | UnshareFlags::NEWTIME
-            | UnshareFlags::NEWNET
-            | UnshareFlags::NEWNS
-            | UnshareFlags::NEWUSER
-            | UnshareFlags::NEWUTS)
-            .bits() as u64,
-        pidfd: 0, // TODO: USE PIDFD
+        flags: (libc::CLONE_CLEAR_SIGHAND
+            | libc::CLONE_NEWCGROUP
+            | libc::CLONE_NEWIPC
+            | libc::CLONE_NEWNS
+            | libc::CLONE_NEWNET
+            | libc::CLONE_NEWPID
+            | libc::CLONE_NEWTIME
+            | libc::CLONE_NEWUSER
+            | libc::CLONE_NEWUTS
+            | libc::CLONE_PIDFD) as u64,
+        pidfd: pidfd.as_mut_ptr().addr() as u64,
         child_tid: 0,
         parent_tid: 0,
         exit_signal: libc::SIGCHLD as u64,
@@ -107,8 +113,10 @@ pub unsafe fn sandbox_process() -> Result<SandboxClone, SandboxError> {
         };
         let pid = Pid::from_raw(pid)
             .unwrap_or_else(|| panic!("SANDBOX: Child PID ({pid}) should be > 0"));
+        // SAFETY: Linus Torvalds wrote this value for us earlier.
+        let pidfd = unsafe { BorrowedFd::borrow_raw(pidfd.assume_init()) };
         if let Err(e) = parent_write_id_map(pid, events) {
-            process::kill_process(pid, Signal::KILL).unwrap();
+            process::pidfd_send_signal(pidfd, Signal::KILL).unwrap();
             panic!("SANDBOX: Failed to write UID/GID map ({e})");
         };
 
@@ -339,16 +347,6 @@ fn child_unshare_all(events: OwnedFd) -> Result<SandboxClone, SandboxError> {
         });
     }
 
-    // SAFETY: No resources are shared from parent process to child.
-    // This invariant is upheld by main().
-    // unsafe {
-    //     unshare_unsafe(
-    //         UnshareFlags::NEWNS
-    //             | UnshareFlags::NEWNET
-    //             | UnshareFlags::NEWIPC
-    //             | UnshareFlags::NEWTIME,
-    //     )?;
-    // }
     Ok(SandboxClone::Child)
 }
 
