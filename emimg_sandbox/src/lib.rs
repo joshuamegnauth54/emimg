@@ -4,7 +4,10 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
-pub use linux::sandbox_process;
+pub use linux::{
+    mount_namespace::{mount_namespace, private_recursive_mount, unbindable_recursive_mount},
+    user_namespace::{SandboxClone, enter_user_namespace},
+};
 
 mod error;
 pub use error::{Action, SandboxError, SandboxSuccess, Stage};

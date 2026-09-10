@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#[cfg(feature = "rust-libc")]
+use libc_rust as libc;
+
 use core::{
+    ffi::CStr,
     fmt::{self, Write},
     hint::cold_path,
 };
@@ -11,11 +15,13 @@ pub struct BufferFmtWriter<'buf> {
 }
 
 impl<'buf> BufferFmtWriter<'buf> {
+    #[inline(always)]
     pub const fn new(buf: &'buf mut [u8]) -> Self {
         Self { buf, pos: 0 }
     }
 
     #[must_use]
+    #[inline(always)]
     pub const fn as_bytes(&self) -> &[u8] {
         // TODO: const Index
         // SAFETY: See `as_str`
@@ -33,6 +39,28 @@ impl<'buf> BufferFmtWriter<'buf> {
         unsafe { str::from_utf8_unchecked(buf) }
     }
 
+    #[must_use]
+    pub const fn as_c_str(&mut self) -> Option<&CStr> {
+        // This internal helper is highly bounded so this shouldn't happen.
+        if self.pos >= self.buf.len() {
+            cold_path();
+            return None;
+        }
+
+        if self.buf[self.pos] != 0 {
+            self.buf[self.pos] = 0;
+            // Deliberately not updating self.pos here so that subsequent writes overwrite the NUL.
+        }
+
+        // TODO: const Index
+        unsafe {
+            Some(CStr::from_bytes_with_nul_unchecked(
+                self.buf.split_at_unchecked(self.pos + 1).0,
+            ))
+        }
+    }
+
+    #[inline(always)]
     pub const fn clear(&mut self) {
         self.pos = 0;
     }
@@ -40,10 +68,10 @@ impl<'buf> BufferFmtWriter<'buf> {
 
 impl Write for BufferFmtWriter<'_> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        debug_assert!(
-            self.pos <= self.buf.len(),
-            "Buffer position should never exceed buffer length"
-        );
+        if !unsafe { libc::memchr(s.as_ptr().cast(), 0, s.len()) }.is_null() {
+            cold_path();
+            return Err(fmt::Error);
+        }
 
         let end = self.pos + s.len();
         if end > self.buf.len() {
@@ -57,4 +85,9 @@ impl Write for BufferFmtWriter<'_> {
         self.pos = end;
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    compile_error!("WRITE TESTS DANG IT");
 }

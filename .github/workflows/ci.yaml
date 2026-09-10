@@ -28,7 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: davidlattimore/wild-action@latest
       - uses: ./.github/actions/setup-linux
-      - run: cargo clippy --all-targets
+      - run: cargo clippy --all-targets --bins --tests
 
   linux-no-libc:
     name: Linux (no libc)
@@ -39,7 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: davidlattimore/wild-action@latest
       - uses: ./.github/actions/setup-linux
-      - run: cargo test
+      - run: cargo test --workspace --verbose -- --nocapture
 
   linux-libc:
     name: Linux (libc)
@@ -50,7 +50,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: davidlattimore/wild-action@latest
       - uses: ./.github/actions/setup-linux
-      - run: cargo test --no-default-features --features=default-rust-libc
+      - run: cargo test --workspace --no-default-features --features=default-rust-libc --verbose -- --nocapture
 
   macos:
     name: macOS

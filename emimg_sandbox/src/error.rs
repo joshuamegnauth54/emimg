@@ -54,14 +54,22 @@ impl SandboxError {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Stage {
+    BindMountPaths,
     CloneNamespace,
+    MakeNewRoot,
+    MountNamespace,
+    PivotRoot,
     WriteIdMap,
 }
 
 impl Display for Stage {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::BindMountPaths => write!(f, "bind mounting paths in NEWNS"),
             Self::CloneNamespace => write!(f, "clone3 into new namespaces"),
+            Self::MakeNewRoot => write!(f, "making a private root for pivot_root"),
+            Self::MountNamespace => write!(f, "building mount namespace (NEWNS)"),
+            Self::PivotRoot => write!(f, "pivoting to new root"),
             Self::WriteIdMap => write!(f, "writing namespace UID/GID map"),
         }
     }
@@ -71,9 +79,16 @@ impl Display for Stage {
 pub enum Action {
     Clone,
     EventfdNew,
+    Mkdir,
+    Mount,
+    MoveMount,
     OpenDir,
+    OpenFile,
+    OpenTree,
     ReadFile,
     SaneSecurity,
+    Stat,
+    Unshare,
     WriteBuf,
     WriteFile,
 }
@@ -83,9 +98,16 @@ impl Display for Action {
         match self {
             Self::Clone => write!(f, "clone3 syscall"),
             Self::EventfdNew => write!(f, "opening an eventfd"),
+            Self::Mkdir => write!(f, "mkdir"),
+            Self::Mount => write!(f, "mount syscall"),
+            Self::MoveMount => write!(f, "move_mount syscall"),
             Self::OpenDir => write!(f, "opening a directory descriptor"),
+            Self::OpenFile => write!(f, "opening a file descriptor"),
+            Self::OpenTree => write!(f, "open_tree (bind mounting path)"),
             Self::ReadFile => write!(f, "reading from a file"),
             Self::SaneSecurity => write!(f, "sanity check"),
+            Self::Stat => write!(f, "stat family of syscalls"),
+            Self::Unshare => write!(f, "unshare syscall"),
             Self::WriteBuf => write!(f, "writing to an in-memory buffer"),
             Self::WriteFile => write!(f, "writing to a file"),
         }
