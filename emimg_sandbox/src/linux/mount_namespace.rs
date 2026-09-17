@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#[cfg(feature = "rust-libc")]
+use libc_rust as libc;
+
 use core::{ffi::CStr, fmt::Write};
 
 use rustix::{
@@ -10,11 +13,12 @@ use rustix::{
     },
     io::Errno,
     mount::{
-        MountFlags, MountPropagationFlags, MoveMountFlags, OpenTreeFlags, UnmountFlags, mount,
-        mount_change, move_mount, open_tree, unmount,
+        FsMountFlags, FsOpenFlags, MountAttrFlags, MountFlags, MountPropagationFlags,
+        MoveMountFlags, OpenTreeFlags, UnmountFlags, fsconfig_create_exclusive,
+        fsconfig_set_string, fsmount, fsopen, mount, mount_change, move_mount, open_tree, unmount,
     },
     path::Arg,
-    process::{chdir, fchdir},
+    process::{chdir, fchdir, pivot_root},
     thread::{UnshareFlags, unshare_unsafe},
 };
 
@@ -29,7 +33,11 @@ pub const ROOT_MNT: &CStr = c"/emilinya/decoded";
 pub const BIND_MNT: &CStr = c"decoded";
 
 /// Create a bespoke mount namespace of untrusted paths.
-pub fn mount_namespace(paths: &[impl Arg]) -> Result<(), SandboxError> {
+pub fn mount_namespace<I>(paths: I) -> Result<(), SandboxError>
+where
+    I: IntoIterator,
+    I::Item: Arg,
+{
     // Place the decoder into its own mount namespace.
     // The supervisor is already in its own namespace, but all three processes should ideally be
     // separate and only communicate via IPC.
@@ -49,15 +57,19 @@ pub fn mount_namespace(paths: &[impl Arg]) -> Result<(), SandboxError> {
     // Bind mount user provided paths into our new tmpfs.
     bind_mount_paths(bind_mnt, paths)?;
 
+    // Attach detached new root
+    mount_staging_root(&new_root)?;
+
+    // pivot_root
+    pivot_new_root(new_root)?;
+
     // MS_UNBINDABLE
     // UNBINDABLE can't be set earlier because I'm bind mounting files from this namespace into this
     // namespace. In other words, it's both the source and destination.
     unbindable_recursive_mount(Stage::MountNamespace, "MS_UNBINDABLE in decoder process")?;
 
-    // pivot_root
-    pivot_new_root(new_root)?;
-
     // Drop capabilities
+    // seal_mount()?;
     todo!()
 }
 
@@ -113,46 +125,57 @@ struct StagingRoot {
 ///
 /// The process must have CAP_SYS_ADMIN and a recursive private mount tree (MS_REC | MS_PRIVATE).
 fn make_staging_root() -> Result<StagingRoot, SandboxError> {
-    // Create a mount point at NEW_ROOT to use for pivot_root
-    mkdir(NEW_ROOT, Mode::RWXU).map_err(|errno| SandboxError {
+    // Open a blank TMPFS configuration context.
+    // https://man7.org/linux/man-pages/man2/fsopen.2.html
+    let fs_fd = fsopen(c"tmpfs", FsOpenFlags::FSOPEN_CLOEXEC).map_err(|errno| SandboxError {
         errno,
         stage: Stage::MakeNewRoot,
-        action: Action::Mkdir,
-        context: Some("making new root under /"),
+        action: Action::FsOpen,
+        context: Some("opening blank TMPFS config context"),
     })?;
 
-    // Mount a tmpfs at the mount point for pivot_root
-    // TODO: fsmount, fsopen
-    mount(
-        c"tmpfs",
-        NEW_ROOT,
-        c"tmpfs",
-        MountFlags::NOATIME | MountFlags::NODEV | MountFlags::NOEXEC | MountFlags::NOSUID,
-        c"--size=16M,--mode=700",
+    // Set options on empty FS config context.
+    // https://man7.org/linux/man-pages/man2/fsconfig.2.html
+    fsconfig_opt(
+        &fs_fd,
+        c"size",
+        c"16M",
+        "setting max size on new TMPFS context",
+    )?;
+    fsconfig_opt(&fs_fd, c"mode", c"700", "setting mode on new TMPFS context")?;
+
+    // After configuration, the file system needs to be created.
+    // FSCONFIG_CMD_CREATE_EXCL doesn't reuse extant, compatible instances. While it is unlikely
+    // that an instance would be reused in my case, it's cleaner to explicitly ensure it isn't.
+    fsconfig_create_exclusive(&fs_fd).map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::MakeNewRoot,
+        action: Action::FsCreate,
+        context: Some("exclusively creating new TMPFS superblock"),
+    })?;
+
+    // Create a detached mount for TMPFS.
+    // The docs say that the config context can be closed at this point, so I'm explicitly passing
+    // ownership to fsmount.
+    let new_root = fsmount(
+        fs_fd,
+        FsMountFlags::FSMOUNT_CLOEXEC,
+        MountAttrFlags::MOUNT_ATTR_IDMAP
+            | MountAttrFlags::MOUNT_ATTR_NOATIME
+            | MountAttrFlags::MOUNT_ATTR_NODEV
+            | MountAttrFlags::MOUNT_ATTR_NOEXEC
+            | MountAttrFlags::MOUNT_ATTR_NOSUID
+            | MountAttrFlags::MOUNT_ATTR_NOSYMFOLLOW,
     )
     .map_err(|errno| SandboxError {
         errno,
         stage: Stage::MakeNewRoot,
         action: Action::Mount,
-        context: Some("mounting tmpfs new root"),
-    })?;
-
-    let new_root = openat2(
-        CWD,
-        NEW_ROOT,
-        DIR_FLAGS,
-        Mode::empty(),
-        ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_SYMLINKS,
-    )
-    .map_err(|errno| SandboxError {
-        errno,
-        stage: Stage::MakeNewRoot,
-        action: Action::OpenDir,
-        context: Some("opening new root for bind mounts"),
+        context: Some("spawning detached TMPFS new root"),
     })?;
 
     // Directory to bind mount user files (zero trust)
-    mkdirat(new_root, BIND_MNT, Mode::RWXU).map_err(|errno| SandboxError {
+    mkdirat(&new_root, BIND_MNT, Mode::RWXU).map_err(|errno| SandboxError {
         errno,
         stage: Stage::MakeNewRoot,
         action: Action::Mkdir,
@@ -160,7 +183,7 @@ fn make_staging_root() -> Result<StagingRoot, SandboxError> {
     })?;
 
     openat2(
-        new_root,
+        &new_root,
         BIND_MNT,
         DIR_FLAGS,
         Mode::empty(),
@@ -173,15 +196,75 @@ fn make_staging_root() -> Result<StagingRoot, SandboxError> {
         action: Action::OpenDir,
         context: Some("opening bind mount directory under new root"),
     })
+
+    // let new_root = openat2(
+    //     CWD,
+    //     NEW_ROOT,
+    //     DIR_FLAGS,
+    //     Mode::empty(),
+    //     ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_SYMLINKS,
+    // )
+    // .map_err(|errno| SandboxError {
+    //     errno,
+    //     stage: Stage::MakeNewRoot,
+    //     action: Action::OpenDir,
+    //     context: Some("opening new root for bind mounts"),
+    // })?;
+}
+
+/// Attach detached mount context.
+fn mount_staging_root(mnt_fd: impl AsFd) -> Result<(), SandboxError> {
+    // Create a mount point at NEW_ROOT to use for pivot_root
+    mkdir(NEW_ROOT, Mode::RWXU).map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::MountNewRoot,
+        action: Action::Mkdir,
+        context: Some("making new root under /"),
+    })?;
+
+    // Attach mount under NEW_ROOT
+    move_mount(
+        mnt_fd,
+        c"",
+        CWD,
+        NEW_ROOT,
+        MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+    )
+    .map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::MountNewRoot,
+        action: Action::MoveMount,
+        context: Some("moving detached mount to new root"),
+    })
+}
+
+/// [`fsconfig_set_string`] helper.
+#[inline]
+fn fsconfig_opt(
+    fs_fd: impl AsFd,
+    key: &CStr,
+    value: &CStr,
+    context: &'static str,
+) -> Result<(), SandboxError> {
+    fsconfig_set_string(fs_fd, key, value).map_err(|errno| SandboxError {
+        errno,
+        stage: Stage::MakeNewRoot,
+        action: Action::FsConfig,
+        context: Some(context),
+    })
 }
 
 /// Bind mount paths into BIND_MNT with very minimal scrubbing.
-fn bind_mount_paths(target: impl AsFd, paths: &[impl Arg]) -> Result<(), SandboxError> {
+fn bind_mount_paths<I>(target: impl AsFd, paths: I) -> Result<(), SandboxError>
+where
+    I: IntoIterator,
+    I::Item: Arg,
+{
     let mut scratch_buf = [0u8; libc::PATH_MAX as usize];
     let mut scratch = BufferFmtWriter::new(&mut scratch_buf);
 
     // TODO: io_uring?
-    for (i, path) in paths.iter().enumerate() {
+    for (i, path) in paths.into_iter().enumerate() {
         let src_fd = openat2(
             CWD,
             path,
@@ -196,7 +279,7 @@ fn bind_mount_paths(target: impl AsFd, paths: &[impl Arg]) -> Result<(), Sandbox
             context: Some("opening untrusted user path for bind mounts"),
         })?;
 
-        let stat = statx(src_fd, c"", AtFlags::EMPTY_PATH, StatxFlags::TYPE).map_err(|errno| {
+        let stat = statx(&src_fd, c"", AtFlags::EMPTY_PATH, StatxFlags::TYPE).map_err(|errno| {
             SandboxError {
                 errno,
                 stage: Stage::BindMountPaths,
